@@ -72,7 +72,7 @@ impl Middleware for RateLimiterMiddleware {
                     intent = ?handshake.intent,
                     "rate limit exceeded"
                 );
-                Ok(MiddlewareResult::Reject("Rate limit exceeded".into()))
+                Ok(MiddlewareResult::Reject("§c接続が早すぎます！少し間を空けてから再度お試しください。".into()))
             }
         })
     }
