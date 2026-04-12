@@ -43,7 +43,7 @@ impl Middleware for DomainRouterMiddleware {
             let Some((_provider_id, server_config)) = self.domain_router.resolve(domain) else {
                 tracing::debug!(domain, "no server found for domain");
                 return Ok(MiddlewareResult::Reject(format!(
-                    "Unknown server: {domain}"
+                    "§c未登録のドメイン名です: {domain}\n§cUnknown domain: {domain}"
                 )));
             };
             let config_id = server_config.effective_id();

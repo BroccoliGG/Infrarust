@@ -72,7 +72,7 @@ impl Middleware for RateLimiterMiddleware {
                     intent = ?handshake.intent,
                     "rate limit exceeded"
                 );
-                Ok(MiddlewareResult::Reject("Rate limit exceeded".into()))
+                Ok(MiddlewareResult::Reject("§c操作が早すぎます！間隔を空けて再度お試し下さい。\n§cPlease try again after some time has passed.".into()))
             }
         })
     }
