@@ -295,7 +295,7 @@ async fn run(config: ProxyConfig) -> anyhow::Result<()> {
         .await
         .context("failed to initialize proxy server")?;
 
-    let static_loader = plugins::build_static_loader(web_config.as_mut());
+    let static_loader = plugins::build_static_loader(web_config.as_mut())?;
     let loaders: Vec<Box<dyn infrarust_core::plugin::PluginLoader>> = vec![Box::new(static_loader)];
 
     let mut plugin_manager = PluginManager::new(loaders);
@@ -317,6 +317,16 @@ async fn run(config: ProxyConfig) -> anyhow::Result<()> {
         Arc::new(infrarust_core::filter::transport_registry::TransportFilterRegistryImpl::new());
 
     let plugin_registry = Arc::new(infrarust_core::plugin::PluginRegistryImpl::new());
+
+    let start_time = std::time::Instant::now();
+
+    infrarust_core::commands::register_builtin_commands(
+        &services.command_manager,
+        services,
+        Arc::clone(&plugin_registry)
+            as Arc<dyn infrarust_api::services::plugin_registry::PluginRegistry>,
+        start_time,
+    );
 
     let plugin_services = PluginServices {
         event_bus: Arc::clone(&services.event_bus) as Arc<dyn infrarust_api::event::bus::EventBus>,
@@ -382,6 +392,7 @@ async fn run(config: ProxyConfig) -> anyhow::Result<()> {
     let console_ban_manager = Arc::clone(&services.ban_manager);
     let console_server_manager = services.server_manager.clone();
     let console_domain_router = Arc::clone(&services.domain_router);
+    let console_permission_service = Arc::clone(&services.permission_service);
 
     // Rebuild transport filter chain now that plugins may have registered filters
     server.rebuild_transport_filter_chain(&transport_filter_registry);
@@ -397,8 +408,9 @@ async fn run(config: ProxyConfig) -> anyhow::Result<()> {
         console_server_manager,
         Arc::new(ConfigServiceImpl::new(console_domain_router)),
         Arc::clone(&plugin_manager),
+        console_permission_service,
         shutdown.clone(),
-        std::time::Instant::now(),
+        start_time,
     ));
 
     let console_task = infrarust_core::console::ConsoleTask::new(console_services);

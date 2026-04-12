@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::defaults;
 use crate::types::{
-    BanConfig, DockerProviderConfig, KeepaliveConfig, MotdConfig, RateLimitConfig,
-    StatusCacheConfig, TelemetryConfig, WebConfig,
+    BanConfig, DockerProviderConfig, ForwardingConfig, IpFilterConfig, KeepaliveConfig, MotdConfig,
+    PermissionsConfig, RateLimitConfig, StatusCacheConfig, TelemetryConfig, WebConfig,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,11 +87,23 @@ pub struct ProxyConfig {
     pub docker: Option<DockerProviderConfig>,
 
     #[serde(default)]
+    pub ip_filter: Option<IpFilterConfig>,
+
+    #[serde(default)]
     pub unknown_domain_behavior: UnknownDomainBehavior,
+
+    #[serde(default = "defaults::announce_proxy_commands")]
+    pub announce_proxy_commands: bool,
+
+    #[serde(default)]
+    pub forwarding: Option<ForwardingConfig>,
 
     /// Web admin API / UI configuration (absent = web plugin not loaded).
     #[serde(default)]
     pub web: Option<WebConfig>,
+
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
 
     /// Plugin configurations keyed by plugin ID.
     #[serde(default)]

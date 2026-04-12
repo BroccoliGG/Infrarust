@@ -1,8 +1,9 @@
-pub mod authreload;
 pub mod changepassword;
+pub mod cracked;
 pub mod forcechangepassword;
 pub mod forcelogin;
 pub mod forceunregister;
+pub mod premium;
 pub mod unregister;
 
 use std::sync::Arc;
@@ -59,27 +60,29 @@ pub fn register_commands(ctx: &dyn PluginContext, handler: Arc<AuthHandler>) {
         }),
     );
 
-    ctx.command_manager().register(
-        "authreload",
-        &[],
-        "Reload auth plugin configuration",
-        Box::new(authreload::AuthReloadCommand {
-            handler: Arc::clone(&handler),
-        }),
-    );
+    if handler.config().premium.enabled && handler.config().premium.allow_cracked_command {
+        ctx.command_manager().register(
+            "cracked",
+            &[],
+            "Force cracked mode (use /login instead of premium auto-login)",
+            Box::new(cracked::CrackedCommand {
+                handler: Arc::clone(&handler),
+            }),
+        );
+
+        ctx.command_manager().register(
+            "premium",
+            &[],
+            "Re-enable premium auto-login",
+            Box::new(premium::PremiumCommand {
+                handler: Arc::clone(&handler),
+            }),
+        );
+    }
 }
 
-fn is_admin(
-    player_id: PlayerId,
-    player_registry: &dyn PlayerRegistry,
-    handler: &AuthHandler,
-) -> bool {
-    if let Some(player) = player_registry.get_player_by_id(player_id) {
-        if player.has_permission("auth.admin") {
-            return true;
-        }
-        handler.is_admin(&player.profile().username)
-    } else {
-        false
-    }
+fn is_admin(player_id: PlayerId, player_registry: &dyn PlayerRegistry) -> bool {
+    player_registry
+        .get_player_by_id(player_id)
+        .is_some_and(|p| p.has_permission("infrarust.admin"))
 }

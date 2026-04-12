@@ -184,6 +184,7 @@ pub fn convert_v1_to_v2(v1: &V1ServerConfig, filename: &str) -> MigrationResult 
         domains: v1.domains.clone(),
         addresses,
         proxy_mode,
+        forwarding_mode: None,
         send_proxy_protocol: v1.send_proxy_protocol.unwrap_or(false),
         domain_rewrite,
         motd,
@@ -267,12 +268,9 @@ fn convert_motds(
     }
 
     let has_dropped_fields = |entry: &Option<V1MotdEntry>| -> bool {
-        entry.as_ref().is_some_and(|e| {
-            e.enabled
-                && (e.protocol_version.is_some()
-                    || e.online_players.is_some()
-                    || !e.samples.is_empty())
-        })
+        entry
+            .as_ref()
+            .is_some_and(|e| e.enabled && (e.online_players.is_some() || !e.samples.is_empty()))
     };
 
     let all_entries = [
@@ -291,7 +289,9 @@ fn convert_motds(
         warnings.push(MigrationWarning {
             severity: MigrationSeverity::Info,
             file: filename.to_string(),
-            message: "MOTD fields 'protocol_version', 'online_players', 'samples' are not supported in V2 and were dropped".to_string(),
+            message:
+                "MOTD fields 'online_players', 'samples' are not supported in V2 and were dropped"
+                    .to_string(),
         });
     }
 
@@ -721,7 +721,11 @@ pub fn convert_v1_proxy_config(v1: &V1InfrarustConfig) -> ProxyMigrationResult {
         ban,
         docker,
         unknown_domain_behavior: Default::default(),
+        announce_proxy_commands: crate::defaults::announce_proxy_commands(),
+        forwarding: None,
+        ip_filter: None,
         web: None,
+        permissions: Default::default(),
         plugins: std::collections::HashMap::new(),
     };
 

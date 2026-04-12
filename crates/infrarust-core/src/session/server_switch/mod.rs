@@ -19,6 +19,7 @@ use infrarust_protocol::version::{ConnectionState, ProtocolVersion};
 use infrarust_transport::BackendConnector;
 
 use crate::error::CoreError;
+use crate::forwarding::{ForwardingData, build_handshake_for_backend};
 use crate::pipeline::types::HandshakeData;
 use crate::services::ProxyServices;
 use crate::session::backend_bridge::BackendBridge;
@@ -54,6 +55,7 @@ pub async fn perform_switch(
     services: &ProxyServices,
     backend_connector: &BackendConnector,
     peer_addr: std::net::SocketAddr,
+    real_ip: Option<std::net::IpAddr>,
     protocol_version: ProtocolVersion,
 ) -> Result<SwitchResult, CoreError> {
     let version = protocol_version;
@@ -139,7 +141,7 @@ pub async fn perform_switch(
     // 3. Connect to new backend
     let connection_info = infrarust_transport::ConnectionInfo {
         peer_addr,
-        real_ip: None,
+        real_ip,
         real_port: None,
         local_addr: peer_addr, // Not critical for outgoing backend connections
         connected_at: tokio::time::Instant::now(),
@@ -163,19 +165,37 @@ pub async fn perform_switch(
 
     let mut new_backend = BackendBridge::new(backend_conn.into_stream(), version);
 
-    // 4. Send handshake + login start with offline UUID
-    new_backend
-        .send_initial_packets_offline(
-            handshake_data,
-            &server_config,
-            game_profile_name,
-            &services.packet_registry,
-        )
-        .await?;
+    let handler = services.resolve_forwarding_handler(&server_config);
+    let fwd_data = ForwardingData {
+        real_ip: real_ip.unwrap_or(peer_addr.ip()),
+        uuid: api_profile.uuid,
+        username: game_profile_name.to_string(),
+        properties: api_profile.properties.clone(),
+        protocol_version: version,
+        chat_session: None,
+    };
+
+    if handler.modifies_handshake() {
+        let mut hs = build_handshake_for_backend(handshake_data, &server_config);
+        handler.apply_handshake(&mut hs, &fwd_data);
+        new_backend
+            .send_handshake_and_login(&hs, game_profile_name, &services.packet_registry)
+            .await?;
+    } else {
+        new_backend
+            .send_initial_packets_offline(
+                handshake_data,
+                &server_config,
+                game_profile_name,
+                &services.packet_registry,
+            )
+            .await?;
+    }
 
     // 5. Consume backend login (SetCompression + LoginSuccess)
+    let velocity_ctx = services.forwarding_secret().map(|s| (&fwd_data, s));
     new_backend
-        .consume_backend_login(&services.packet_registry, version)
+        .consume_backend_login(&services.packet_registry, version, velocity_ctx)
         .await?;
 
     // 6. For 1.20.2+: send LoginAcknowledged to backend, transition to Config

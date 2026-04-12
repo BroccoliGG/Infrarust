@@ -1,7 +1,8 @@
 //! Backend-side bridge for intercepted proxy modes.
 //!
 //! Wraps the backend TCP stream with packet codec and optional compression.
-//! No encryption in Phase 2A (Offline/ClientOnly backends run in offline mode).
+
+use std::time::Duration;
 
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,8 +11,10 @@ use tokio::net::TcpStream;
 use infrarust_config::ServerConfig;
 use infrarust_protocol::Packet;
 use infrarust_protocol::io::{PacketDecoder, PacketEncoder, PacketFrame};
+use infrarust_protocol::packets::handshake::SHandshake;
 use infrarust_protocol::packets::login::{
-    CLoginDisconnect, CLoginSuccess, CSetCompression, SLoginStart,
+    CLoginDisconnect, CLoginPluginRequest, CLoginSuccess, CSetCompression, SLoginPluginResponse,
+    SLoginStart,
 };
 use infrarust_protocol::registry::{DecodedPacket, PacketRegistry};
 use infrarust_protocol::version::{ConnectionState, Direction, ProtocolVersion};
@@ -183,6 +186,42 @@ impl BackendBridge {
         Ok(())
     }
 
+    pub async fn send_handshake_and_login(
+        &mut self,
+        handshake: &SHandshake,
+        username: &str,
+        registry: &PacketRegistry,
+    ) -> Result<(), CoreError> {
+        let version = self.protocol_version;
+
+        let mut handshake_payload = Vec::new();
+        handshake.encode(&mut handshake_payload, version)?;
+        self.encoder.append_raw(0x00, &handshake_payload)?;
+        let handshake_data = self.encoder.take();
+        self.stream.write_all(&handshake_data).await?;
+
+        let uuid = offline_uuid(username);
+        let login_start = SLoginStart {
+            name: username.to_string(),
+            uuid: Some(uuid),
+            signature_data: None,
+        };
+
+        let packet_id = registry
+            .get_packet_id::<SLoginStart>(ConnectionState::Login, Direction::Serverbound, version)
+            .unwrap_or(0x00);
+
+        let mut payload = Vec::new();
+        login_start.encode(&mut payload, version)?;
+
+        self.encoder.append_raw(packet_id, &payload)?;
+        let data = self.encoder.take();
+        self.stream.write_all(&data).await?;
+        self.stream.flush().await?;
+
+        Ok(())
+    }
+
     /// Consumes the backend's login response without forwarding to the client.
     ///
     /// Reads `SetCompression` (activates compression on backend) and `LoginSuccess`
@@ -197,52 +236,90 @@ impl BackendBridge {
         &mut self,
         registry: &PacketRegistry,
         version: ProtocolVersion,
+        velocity_ctx: Option<(&crate::forwarding::ForwardingData, &[u8])>,
     ) -> Result<(), CoreError> {
-        loop {
-            let frame = self
-                .read_frame()
-                .await?
-                .ok_or(CoreError::ConnectionClosed)?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let frame = self
+                    .read_frame()
+                    .await?
+                    .ok_or(CoreError::ConnectionClosed)?;
 
-            let decoded = registry.decode_frame(
-                &frame,
-                ConnectionState::Login,
-                Direction::Clientbound,
-                version,
-            )?;
+                let decoded = registry.decode_frame(
+                    &frame,
+                    ConnectionState::Login,
+                    Direction::Clientbound,
+                    version,
+                )?;
 
-            match decoded {
-                DecodedPacket::Typed { packet, .. } => {
-                    if let Some(set_comp) = packet.as_any().downcast_ref::<CSetCompression>() {
-                        self.set_compression(set_comp.threshold.0);
-                        tracing::debug!(
-                            threshold = set_comp.threshold.0,
-                            "backend compression activated"
-                        );
-                        continue;
-                    }
-
-                    if packet.as_any().downcast_ref::<CLoginSuccess>().is_some() {
-                        if version.less_than(ProtocolVersion::V1_20_2) {
-                            self.set_state(ConnectionState::Play);
+                match decoded {
+                    DecodedPacket::Typed { packet, .. } => {
+                        if let Some(set_comp) = packet.as_any().downcast_ref::<CSetCompression>() {
+                            self.set_compression(set_comp.threshold.0);
+                            tracing::debug!(
+                                threshold = set_comp.threshold.0,
+                                "backend compression activated"
+                            );
+                            continue;
                         }
-                        tracing::debug!("consumed backend LoginSuccess");
-                        break;
-                    }
 
-                    if let Some(disconnect) = packet.as_any().downcast_ref::<CLoginDisconnect>() {
-                        return Err(CoreError::Rejected(format!(
-                            "backend refused login: {}",
-                            disconnect.reason
-                        )));
+                        if packet.as_any().downcast_ref::<CLoginSuccess>().is_some() {
+                            if version.less_than(ProtocolVersion::V1_20_2) {
+                                self.set_state(ConnectionState::Play);
+                            }
+                            tracing::debug!("consumed backend LoginSuccess");
+                            break;
+                        }
+
+                        if let Some(disconnect) = packet.as_any().downcast_ref::<CLoginDisconnect>()
+                        {
+                            return Err(CoreError::Rejected(format!(
+                                "backend refused login: {}",
+                                disconnect.reason
+                            )));
+                        }
+
+                        if let Some(request) = packet.as_any().downcast_ref::<CLoginPluginRequest>()
+                        {
+                            if crate::forwarding::velocity::is_velocity_request(request) {
+                                if let Some((fwd_data, secret)) = velocity_ctx {
+                                    let response =
+                                        crate::forwarding::velocity::build_velocity_response(
+                                            request, fwd_data, secret,
+                                        );
+                                    self.send_packet(&response, registry).await?;
+                                    tracing::info!("velocity forwarding applied (auto-detected)");
+                                    continue;
+                                }
+                                tracing::debug!(
+                                    "backend requested velocity forwarding but no secret is \
+                                     configured — responding 'not understood'"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    channel = %request.channel,
+                                    "responding 'not understood' to LoginPluginRequest"
+                                );
+                            }
+
+                            let response = SLoginPluginResponse {
+                                message_id: request.message_id,
+                                successful: false,
+                                data: Vec::new(),
+                            };
+                            self.send_packet(&response, registry).await?;
+                            continue;
+                        }
                     }
-                }
-                DecodedPacket::Opaque { id, .. } => {
-                    tracing::debug!(id, "ignoring opaque packet during backend login");
+                    DecodedPacket::Opaque { id, .. } => {
+                        tracing::debug!(id, "ignoring opaque packet during backend login");
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|_| CoreError::Rejected("backend login timed out".to_string()))?
     }
 }

@@ -15,6 +15,8 @@ fn make_mock_script(dir: &std::path::Path, name: &str, content: &str) -> std::pa
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let f = std::fs::File::open(&path).unwrap();
+        f.sync_all().unwrap();
     }
     // Brief pause to avoid "Text file busy" on some CI environments
     std::thread::sleep(std::time::Duration::from_millis(50));

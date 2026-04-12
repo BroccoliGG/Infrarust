@@ -102,6 +102,11 @@ pub fn test_proxy_services() -> ProxyServices {
         limbo_handler_registry: Arc::new(LimboHandlerRegistry::new()),
         registry_codec_cache: Arc::new(RegistryCodecCache::new(provider)),
         provider_event_sender: tokio::sync::mpsc::channel(1).0,
+        forwarding_mode: Arc::new(crate::forwarding::ForwardingMode::None),
+        forwarding_secret: None,
+        permission_service: Arc::new(crate::permissions::PermissionService::new_sync(
+            &Default::default(),
+        )),
     }
 }
 

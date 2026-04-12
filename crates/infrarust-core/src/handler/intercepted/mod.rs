@@ -6,6 +6,9 @@ mod session_loop;
 
 use std::sync::Arc;
 
+use infrarust_api::event::ResultedEvent;
+use infrarust_api::events::lifecycle::{PermissionsSetupEvent, PermissionsSetupResult};
+use infrarust_api::permissions::PermissionChecker;
 use tokio_util::sync::CancellationToken;
 
 use infrarust_transport::BackendConnector;
@@ -44,11 +47,17 @@ impl InterceptedHandler {
         }
     }
 
-    pub fn offline(backend_connector: Arc<BackendConnector>, services: ProxyServices) -> Self {
+    pub fn offline(
+        backend_connector: Arc<BackendConnector>,
+        services: ProxyServices,
+        mojang_auth: Option<Arc<MojangAuth>>,
+    ) -> Self {
         Self {
             backend_connector,
             services,
-            auth_strategy: AuthStrategy::None,
+            auth_strategy: AuthStrategy::Offline {
+                mojang: mojang_auth,
+            },
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
@@ -110,6 +119,29 @@ impl InterceptedHandler {
             InitialMode::Denied => return Ok(()),
         };
 
+        let default_checker: Arc<dyn PermissionChecker> = if auth_result.online_mode {
+            Arc::new(
+                self.services
+                    .permission_service
+                    .build_checker(auth_result.player_uuid),
+            )
+        } else {
+            crate::permissions::default_checker()
+        };
+
+        let perm_event = PermissionsSetupEvent::new(
+            auth_result.player_id,
+            auth_result.api_profile.clone(),
+            auth_result.online_mode,
+        );
+        let perm_event = self.services.event_bus.fire(perm_event).await;
+        let permission_checker =
+            if let PermissionsSetupResult::Custom(checker) = perm_event.result() {
+                checker.clone()
+            } else {
+                default_checker
+            };
+
         let session_token = shutdown.child_token();
         let (cmd_tx, cmd_rx) = PlayerSession::channel();
 
@@ -122,8 +154,10 @@ impl InterceptedHandler {
                 routing.config_id.clone(),
             )),
             true, // active: intercepted modes support packet injection
+            auth_result.online_mode,
             cmd_tx,
             session_token.clone(),
+            permission_checker,
         ));
 
         let session_id = self.services.connection_registry.register(player_session);
@@ -159,6 +193,7 @@ impl InterceptedHandler {
             &handshake,
             version,
             peer_addr,
+            Some(ctx.client_ip),
             target_server_id,
             &session_id,
             &self.services,

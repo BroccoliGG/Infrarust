@@ -49,7 +49,7 @@ fn first_raw_packet(handshake_data: &HandshakeData) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-fn encode_handshake_with_domain(
+pub(crate) fn encode_handshake_with_domain(
     handshake_data: &HandshakeData,
     new_domain: &str,
 ) -> Result<Vec<u8>, CoreError> {
@@ -114,6 +114,7 @@ mod tests {
             domains: vec!["play.example.com".to_string()],
             addresses: vec!["backend.local:25565".parse::<ServerAddress>().unwrap()],
             proxy_mode: Default::default(),
+            forwarding_mode: None,
             send_proxy_protocol: false,
             domain_rewrite: rewrite,
             motd: Default::default(),

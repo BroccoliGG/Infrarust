@@ -31,11 +31,7 @@ struct WildcardEntry {
     provider_id: ProviderId,
 }
 
-/// Strip FML markers (`\0FML`, `\0FML2`, `\0FML3`) appended by
-/// Forge/Fabric clients in the handshake hostname.
-fn strip_fml_marker(domain: &str) -> &str {
-    domain.split('\0').next().unwrap_or(domain)
-}
+use crate::util::normalize_handshake;
 
 /// Returns `true` if the domain string contains wildcard characters.
 fn is_wildcard(domain: &str) -> bool {
@@ -157,9 +153,9 @@ impl DomainRouter {
     /// Resolves a domain to its provider and server configuration.
     ///
     /// Exact matches take priority over wildcard matches.
-    /// FML markers are stripped before resolution.
+    /// FML markers and trailing dots are stripped before resolution.
     pub fn resolve(&self, domain: &str) -> Option<(ProviderId, Arc<ServerConfig>)> {
-        let stripped = strip_fml_marker(domain);
+        let stripped = normalize_handshake(domain);
         let normalized = stripped.to_lowercase();
 
         // 1. Exact match (O(1) via DashMap)

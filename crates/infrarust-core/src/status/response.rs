@@ -55,12 +55,13 @@ impl ServerPingResponse {
         description: &str,
         favicon: Option<&str>,
         version_name: Option<&str>,
+        version_protocol: Option<i32>,
         max_players: Option<i32>,
     ) -> Self {
         Self {
             version: PingVersion {
                 name: version_name.unwrap_or("Infrarust").to_string(),
-                protocol: CURRENT_MC_PROTOCOL,
+                protocol: version_protocol.unwrap_or(CURRENT_MC_PROTOCOL),
             },
             players: PingPlayers {
                 max: max_players.unwrap_or(0),
@@ -213,7 +214,8 @@ mod tests {
 
     #[test]
     fn test_synthetic_sleeping() {
-        let resp = ServerPingResponse::synthetic("\u{00a7}7Server sleeping", None, None, None);
+        let resp =
+            ServerPingResponse::synthetic("\u{00a7}7Server sleeping", None, None, None, None);
         assert_eq!(resp.version.name, "Infrarust");
         assert_eq!(resp.players.max, 0);
         assert_eq!(resp.players.online, 0);

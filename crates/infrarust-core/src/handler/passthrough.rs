@@ -5,13 +5,13 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 use infrarust_config::DomainRewrite;
+use infrarust_protocol::Packet;
 use infrarust_protocol::io::PacketEncoder;
-use infrarust_protocol::packets::handshake::SHandshake;
 use infrarust_protocol::version::ProtocolVersion;
-use infrarust_protocol::{Packet, VarInt};
 use infrarust_transport::{BackendConnector, select_forwarder};
 
 use crate::error::CoreError;
+use crate::forwarding::{ForwardingData, ForwardingHandler, build_handshake_for_backend};
 use crate::pipeline::context::ConnectionContext;
 use crate::pipeline::types::{HandshakeData, LoginData, RoutingData};
 use crate::player::PlayerSession;
@@ -131,7 +131,15 @@ impl PassthroughHandler {
 
         // Forward initial packets to backend
         let mut backend = backend;
-        self.forward_initial_packets(backend.stream_mut(), &handshake, server_config)
+        let fwd_data = ForwardingData {
+            real_ip: ctx.client_ip,
+            uuid: player_uuid,
+            username: username.clone(),
+            properties: vec![], // No properties in passthrough (no Mojang auth)
+            protocol_version: handshake.protocol_version,
+            chat_session: None,
+        };
+        self.forward_initial_packets(backend.stream_mut(), &handshake, server_config, &fwd_data)
             .await?;
 
         self.services.event_bus.fire_and_forget_arc(
@@ -154,8 +162,10 @@ impl PassthroughHandler {
                 routing.config_id.clone(),
             )),
             false, // active: Passthrough doesn't support packet injection
+            false, // online_mode: passthrough doesn't authenticate
             cmd_tx,
             session_token.clone(),
+            crate::permissions::default_checker(),
         ));
 
         let session_id = self.services.connection_registry.register(player_session);
@@ -216,43 +226,89 @@ impl PassthroughHandler {
 
     /// Forwards the initial handshake and login packets to the backend.
     ///
-    /// Applies domain rewrite if configured.
+    /// Applies domain rewrite and forwarding data injection if configured.
     async fn forward_initial_packets(
         &self,
         backend: &mut tokio::net::TcpStream,
         handshake: &HandshakeData,
         server_config: &infrarust_config::ServerConfig,
+        fwd_data: &ForwardingData,
     ) -> Result<(), CoreError> {
+        let handler = self.services.resolve_forwarding_handler(server_config);
+
+        if matches!(handler, ForwardingHandler::Velocity(_)) {
+            tracing::warn!(
+                "Velocity forwarding is configured for server '{}' in passthrough mode. \
+                 Velocity requires packet parsing and cannot work with passthrough. \
+                 Falling back to BungeeCord legacy forwarding.",
+                server_config.effective_id()
+            );
+            let fallback =
+                ForwardingHandler::Legacy(crate::forwarding::legacy::LegacyForwardingHandler);
+            return self
+                .forward_with_forwarding(backend, handshake, server_config, fwd_data, &fallback)
+                .await;
+        }
+
+        if handler.modifies_handshake() {
+            return self
+                .forward_with_forwarding(backend, handshake, server_config, fwd_data, &handler)
+                .await;
+        }
+
         match &server_config.domain_rewrite {
             DomainRewrite::None => {
-                // Forward raw packets as-is
                 for raw in &handshake.raw_packets {
                     backend.write_all(raw).await?;
                 }
             }
             DomainRewrite::Explicit(new_domain) => {
-                // Re-encode handshake with new domain, then forward rest as-is
                 self.forward_with_rewritten_handshake(backend, handshake, new_domain)
                     .await?;
             }
             DomainRewrite::FromBackend => {
-                // Use backend address as domain
                 if let Some(addr) = server_config.addresses.first() {
                     self.forward_with_rewritten_handshake(backend, handshake, &addr.host)
                         .await?;
                 } else {
-                    // Fallback: forward as-is
                     for raw in &handshake.raw_packets {
                         backend.write_all(raw).await?;
                     }
                 }
             }
             _ => {
-                // Unknown variant (non-exhaustive future additions): forward as-is
                 for raw in &handshake.raw_packets {
                     backend.write_all(raw).await?;
                 }
             }
+        }
+
+        backend.flush().await?;
+        Ok(())
+    }
+
+    async fn forward_with_forwarding(
+        &self,
+        backend: &mut tokio::net::TcpStream,
+        handshake: &HandshakeData,
+        server_config: &infrarust_config::ServerConfig,
+        fwd_data: &ForwardingData,
+        handler: &ForwardingHandler,
+    ) -> Result<(), CoreError> {
+        let mut modified = build_handshake_for_backend(handshake, server_config);
+
+        handler.apply_handshake(&mut modified, fwd_data);
+
+        let mut payload = Vec::new();
+        modified.encode(&mut payload, handshake.protocol_version)?;
+
+        let mut encoder = PacketEncoder::new();
+        encoder.append_raw(0x00, &payload)?;
+        let bytes = encoder.take();
+        backend.write_all(&bytes).await?;
+
+        for raw in handshake.raw_packets.iter().skip(1) {
+            backend.write_all(raw).await?;
         }
 
         backend.flush().await?;
@@ -283,32 +339,9 @@ impl PassthroughHandler {
         handshake: &HandshakeData,
         new_domain: &str,
     ) -> Result<(), CoreError> {
-        // Build a modified SHandshake packet
-        let next_state = match handshake.intent {
-            crate::pipeline::types::ConnectionIntent::Status => {
-                infrarust_protocol::ConnectionState::Status
-            }
-            crate::pipeline::types::ConnectionIntent::Login
-            | crate::pipeline::types::ConnectionIntent::Transfer => {
-                infrarust_protocol::ConnectionState::Login
-            }
-        };
-
-        let modified = SHandshake {
-            protocol_version: VarInt(handshake.protocol_version.0),
-            server_address: new_domain.to_string(),
-            server_port: handshake.port,
-            next_state,
-        };
-
-        // Encode the modified handshake
-        let mut payload = Vec::new();
-        modified.encode(&mut payload, handshake.protocol_version)?;
-
-        let mut encoder = PacketEncoder::new();
-        encoder.append_raw(0x00, &payload)?; // Handshake is always 0x00
-        let bytes = encoder.take();
-        backend.write_all(&bytes).await?;
+        let encoded =
+            crate::util::domain_rewrite::encode_handshake_with_domain(handshake, new_domain)?;
+        backend.write_all(&encoded).await?;
 
         // Forward remaining packets (login start etc.) as-is
         for raw in handshake.raw_packets.iter().skip(1) {
