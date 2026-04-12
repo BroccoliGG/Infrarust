@@ -55,12 +55,13 @@ impl ServerPingResponse {
         description: &str,
         favicon: Option<&str>,
         version_name: Option<&str>,
+        version_protocol: Option<i32>,
         max_players: Option<i32>,
     ) -> Self {
         Self {
             version: PingVersion {
                 name: version_name.unwrap_or("Infrarust").to_string(),
-                protocol: CURRENT_MC_PROTOCOL,
+                protocol: version_protocol.unwrap_or(CURRENT_MC_PROTOCOL),
             },
             players: PingPlayers {
                 max: max_players.unwrap_or(0),
@@ -84,6 +85,9 @@ impl ServerPingResponse {
         }
         if let Some(ref name) = motd.version_name {
             self.version.name.clone_from(name);
+        }
+        if let Some(protocol) = motd.version_protocol {
+            self.version.protocol = protocol;
         }
         if let Some(max) = motd.max_players {
             self.players.max = max.cast_signed();
@@ -210,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_synthetic_sleeping() {
-        let resp = ServerPingResponse::synthetic("\u{00a7}7Server sleeping", None, None, None);
+        let resp = ServerPingResponse::synthetic("\u{00a7}7Server sleeping", None, None, None, None);
         assert_eq!(resp.version.name, "Infrarust");
         assert_eq!(resp.players.max, 0);
         assert_eq!(resp.players.online, 0);
@@ -227,6 +231,7 @@ mod tests {
             text: "Custom MOTD".to_string(),
             favicon: None,
             version_name: None,
+            version_protocol: None,
             max_players: None,
         };
         resp.apply_overrides(&entry);
@@ -243,6 +248,7 @@ mod tests {
             text: "New MOTD".to_string(),
             favicon: None,
             version_name: None,
+            version_protocol: None,
             max_players: Some(200),
         };
         resp.apply_overrides(&entry);
@@ -258,6 +264,7 @@ mod tests {
             text: "X".to_string(),
             favicon: Some("data:image/png;base64,abc".to_string()),
             version_name: None,
+            version_protocol: None,
             max_players: None,
         };
         resp.apply_overrides(&entry);

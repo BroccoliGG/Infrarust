@@ -252,12 +252,13 @@ impl StatusHandler {
         };
 
         motd_entry.map_or_else(
-            || ServerPingResponse::synthetic(default_text, None, None, None),
+            || ServerPingResponse::synthetic(default_text, None, None, None, None),
             |entry| {
                 ServerPingResponse::synthetic(
                     &entry.text,
                     entry.favicon.as_deref(),
                     entry.version_name.as_deref(),
+                    entry.version_protocol,
                     entry.max_players.map(u32::cast_signed),
                 )
             },
@@ -269,12 +270,13 @@ impl StatusHandler {
         let entry = self.default_motd.as_ref().and_then(|m| m.online.as_ref());
 
         entry.map_or_else(
-            || ServerPingResponse::synthetic("An Infrarust Proxy", None, None, None),
+            || ServerPingResponse::synthetic("An Infrarust Proxy", None, None, None, None),
             |entry| {
                 ServerPingResponse::synthetic(
                     &entry.text,
                     entry.favicon.as_deref(),
                     entry.version_name.as_deref(),
+                    entry.version_protocol,
                     entry.max_players.map(u32::cast_signed),
                 )
             },
@@ -293,6 +295,7 @@ impl StatusHandler {
                 &entry.text,
                 entry.favicon.as_deref(),
                 entry.version_name.as_deref(),
+                entry.version_protocol,
                 entry.max_players.map(u32::cast_signed),
             );
         }
@@ -306,12 +309,14 @@ impl StatusHandler {
                 &entry.text,
                 entry.favicon.as_deref(),
                 entry.version_name.as_deref(),
+                entry.version_protocol,
                 entry.max_players.map(u32::cast_signed),
             );
         }
 
         let mut resp = ServerPingResponse::synthetic(
             "\u{00a7}cServer unreachable",
+            None,
             None,
             None,
             Some(config.max_players.cast_signed()),

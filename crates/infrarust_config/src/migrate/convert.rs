@@ -208,6 +208,7 @@ fn convert_v1_motd_entry(entry: &V1MotdEntry) -> Option<MotdEntry> {
         text,
         favicon: entry.favicon.clone(),
         version_name: entry.version_name.clone(),
+        version_protocol: entry.protocol_version,
         max_players: entry.max_players,
     })
 }
@@ -268,10 +269,7 @@ fn convert_motds(
 
     let has_dropped_fields = |entry: &Option<V1MotdEntry>| -> bool {
         entry.as_ref().is_some_and(|e| {
-            e.enabled
-                && (e.protocol_version.is_some()
-                    || e.online_players.is_some()
-                    || !e.samples.is_empty())
+            e.enabled && (e.online_players.is_some() || !e.samples.is_empty())
         })
     };
 
@@ -291,7 +289,7 @@ fn convert_motds(
         warnings.push(MigrationWarning {
             severity: MigrationSeverity::Info,
             file: filename.to_string(),
-            message: "MOTD fields 'protocol_version', 'online_players', 'samples' are not supported in V2 and were dropped".to_string(),
+            message: "MOTD fields 'online_players', 'samples' are not supported in V2 and were dropped".to_string(),
         });
     }
 
@@ -666,6 +664,7 @@ pub fn convert_v1_proxy_config(v1: &V1InfrarustConfig) -> ProxyMigrationResult {
                     text,
                     favicon: e.favicon.clone(),
                     version_name: e.version_name.clone(),
+                    version_protocol: e.protocol_version,
                     max_players: e.max_players,
                 }),
                 ..MotdConfig::default()

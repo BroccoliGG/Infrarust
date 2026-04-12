@@ -89,7 +89,7 @@ mod tests {
     use super::*;
 
     fn sample_response() -> ServerPingResponse {
-        ServerPingResponse::synthetic("Test", None, None, Some(100))
+        ServerPingResponse::synthetic("Test", None, None, None, Some(100))
     }
 
     #[test]
