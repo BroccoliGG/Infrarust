@@ -214,7 +214,8 @@ mod tests {
 
     #[test]
     fn test_synthetic_sleeping() {
-        let resp = ServerPingResponse::synthetic("\u{00a7}7Server sleeping", None, None, None, None);
+        let resp =
+            ServerPingResponse::synthetic("\u{00a7}7Server sleeping", None, None, None, None);
         assert_eq!(resp.version.name, "Infrarust");
         assert_eq!(resp.players.max, 0);
         assert_eq!(resp.players.online, 0);

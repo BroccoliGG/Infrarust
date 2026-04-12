@@ -268,9 +268,9 @@ fn convert_motds(
     }
 
     let has_dropped_fields = |entry: &Option<V1MotdEntry>| -> bool {
-        entry.as_ref().is_some_and(|e| {
-            e.enabled && (e.online_players.is_some() || !e.samples.is_empty())
-        })
+        entry
+            .as_ref()
+            .is_some_and(|e| e.enabled && (e.online_players.is_some() || !e.samples.is_empty()))
     };
 
     let all_entries = [
@@ -289,7 +289,9 @@ fn convert_motds(
         warnings.push(MigrationWarning {
             severity: MigrationSeverity::Info,
             file: filename.to_string(),
-            message: "MOTD fields 'online_players', 'samples' are not supported in V2 and were dropped".to_string(),
+            message:
+                "MOTD fields 'online_players', 'samples' are not supported in V2 and were dropped"
+                    .to_string(),
         });
     }
 
