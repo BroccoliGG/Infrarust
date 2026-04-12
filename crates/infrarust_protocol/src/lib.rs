@@ -57,4 +57,4 @@ pub const MAX_PACKET_DATA_SIZE: usize = 8_388_608;
 pub const CURRENT_MC_PROTOCOL: i32 = 774; // 1.21.11
 
 /// Human-readable name of the most recent supported Minecraft release.
-pub const CURRENT_MC_VERSION: &str = "DDoS Shield";
+pub const CURRENT_MC_VERSION: &str = "1.21.11";

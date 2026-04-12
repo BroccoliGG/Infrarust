@@ -22,6 +22,7 @@ use infrarust_protocol::{CURRENT_MC_PROTOCOL, Packet};
 
 use infrarust_server_manager::{ServerManagerService, ServerState};
 
+use super::STATUS_PROTOCOL_VERSION;
 use super::cache::StatusCache;
 use super::favicon::FaviconCache;
 use super::relay::StatusRelayClient;
@@ -92,10 +93,6 @@ impl StatusHandler {
         let routing = ctx.extensions.get::<RoutingData>().cloned();
         let handshake = ctx.extensions.get::<HandshakeData>().cloned();
 
-        let protocol_version = handshake
-            .as_ref()
-            .map_or(ProtocolVersion(CURRENT_MC_PROTOCOL), |h| h.protocol_version);
-
         self.read_status_request(ctx).await?;
 
         let mut response = self
@@ -122,16 +119,10 @@ impl StatusHandler {
         let status_resp = CStatusResponse {
             json_response: json,
         };
-        self.send_packet(ctx, &status_resp, protocol_version)
+        self.send_packet(ctx, &status_resp, STATUS_PROTOCOL_VERSION)
             .await?;
 
-        if response.version.protocol == -1 {
-            // Shutdown the write side so the client receives the status response
-            // but gets a connection close when it tries ping, showing X on bars
-            ctx.stream_mut().shutdown().await?;
-        } else {
-            self.handle_ping_pong(ctx, protocol_version).await?;
-        }
+        self.handle_ping_pong(ctx).await?;
 
         Ok(())
     }
@@ -230,19 +221,11 @@ impl StatusHandler {
             }
         }
 
-        if let Some((mut response, _latency)) = self.cache.get_stale(config_id) {
+        if let Some((response, _latency)) = self.cache.get_stale(config_id) {
             tracing::warn!(
                 server = config_id,
                 "serving stale cached status (backend unreachable)"
             );
-            let unreachable_entry = config.motd.unreachable.as_ref().or_else(|| {
-                self.default_motd
-                    .as_ref()
-                    .and_then(|m| m.unreachable.as_ref())
-            });
-            if let Some(entry) = unreachable_entry {
-                response.apply_overrides(entry);
-            }
             return response;
         }
 
@@ -307,31 +290,36 @@ impl StatusHandler {
         connection_registry: &ConnectionRegistry,
         config_id: &str,
     ) -> ServerPingResponse {
-        let motd_entry = config.motd.unreachable.as_ref().or_else(|| {
-            self.default_motd
-                .as_ref()
-                .and_then(|m| m.unreachable.as_ref())
-        });
+        if let Some(ref entry) = config.motd.unreachable {
+            return ServerPingResponse::synthetic(
+                &entry.text,
+                entry.favicon.as_deref(),
+                entry.version_name.as_deref(),
+                entry.version_protocol,
+                entry.max_players.map(u32::cast_signed),
+            );
+        }
 
-        let mut resp = motd_entry.map_or_else(
-            || {
-                ServerPingResponse::synthetic(
-                    "\u{00a7}cServer unreachable",
-                    None,
-                    None,
-                    None,
-                    Some(config.max_players.cast_signed()),
-                )
-            },
-            |entry| {
-                ServerPingResponse::synthetic(
-                    &entry.text,
-                    entry.favicon.as_deref(),
-                    entry.version_name.as_deref(),
-                    entry.version_protocol,
-                    entry.max_players.map(u32::cast_signed),
-                )
-            },
+        if let Some(entry) = self
+            .default_motd
+            .as_ref()
+            .and_then(|m| m.unreachable.as_ref())
+        {
+            return ServerPingResponse::synthetic(
+                &entry.text,
+                entry.favicon.as_deref(),
+                entry.version_name.as_deref(),
+                entry.version_protocol,
+                entry.max_players.map(u32::cast_signed),
+            );
+        }
+
+        let mut resp = ServerPingResponse::synthetic(
+            "\u{00a7}cServer unreachable",
+            None,
+            None,
+            None,
+            Some(config.max_players.cast_signed()),
         );
         let online = connection_registry.count_by_server(config_id) as i32;
         resp.players.online = online;
@@ -364,11 +352,7 @@ impl StatusHandler {
 
     /// Handles the ping/pong exchange after status response.
     #[allow(clippy::similar_names)] // decoder vs decoded are contextually different
-    async fn handle_ping_pong(
-        &self,
-        ctx: &mut ConnectionContext,
-        protocol_version: ProtocolVersion,
-    ) -> Result<(), CoreError> {
+    async fn handle_ping_pong(&self, ctx: &mut ConnectionContext) -> Result<(), CoreError> {
         let frame = tokio::time::timeout(Duration::from_secs(5), async {
             let mut decoder = PacketDecoder::new();
             loop {
@@ -390,7 +374,7 @@ impl StatusHandler {
             &frame,
             ConnectionState::Status,
             Direction::Serverbound,
-            protocol_version,
+            STATUS_PROTOCOL_VERSION,
         )?;
 
         let payload = match decoded {
@@ -402,7 +386,7 @@ impl StatusHandler {
         };
 
         let pong = CPingResponse { payload };
-        self.send_packet(ctx, &pong, protocol_version).await
+        self.send_packet(ctx, &pong, STATUS_PROTOCOL_VERSION).await
     }
 
     /// Encodes and sends a typed packet to the client stream.

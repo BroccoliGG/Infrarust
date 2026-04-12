@@ -18,8 +18,6 @@ fn make_mock_script(dir: &std::path::Path, name: &str, content: &str) -> std::pa
         let f = std::fs::File::open(&path).unwrap();
         f.sync_all().unwrap();
     }
-    // Brief pause to avoid "Text file busy" on some CI environments
-    std::thread::sleep(std::time::Duration::from_millis(50));
     path
 }
 
