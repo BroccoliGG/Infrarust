@@ -269,18 +269,15 @@ impl StatusHandler {
         };
 
         motd_entry.map_or_else(
-            || ServerPingResponse::synthetic(default_text, None, None, None),
+            || ServerPingResponse::synthetic(default_text, None, None, None, None),
             |entry| {
-                let mut r = ServerPingResponse::synthetic(
+                ServerPingResponse::synthetic(
                     &entry.text,
                     entry.favicon.as_deref(),
                     entry.version_name.as_deref(),
+                    entry.version_protocol,
                     entry.max_players.map(u32::cast_signed),
-                );
-                if let Some(protocol) = entry.version_protocol {
-                    r.version.protocol = protocol;
-                }
-                r
+                )
             },
         )
     }
@@ -289,21 +286,18 @@ impl StatusHandler {
     fn build_default_motd_response(&self) -> ServerPingResponse {
         let entry = self.default_motd.as_ref().and_then(|m| m.online.as_ref());
 
-        let mut resp = entry.map_or_else(
-            || ServerPingResponse::synthetic("An Infrarust Proxy", None, None, None),
+        entry.map_or_else(
+            || ServerPingResponse::synthetic("An Infrarust Proxy", None, None, None, None),
             |entry| {
                 ServerPingResponse::synthetic(
                     &entry.text,
                     entry.favicon.as_deref(),
                     entry.version_name.as_deref(),
+                    entry.version_protocol,
                     entry.max_players.map(u32::cast_signed),
                 )
             },
-        );
-        if let Some(protocol) = entry.and_then(|e| e.version_protocol) {
-            resp.version.protocol = protocol;
-        }
-        resp
+        )
     }
 
     /// Builds a synthetic "unreachable" MOTD.
@@ -325,6 +319,7 @@ impl StatusHandler {
                     "\u{00a7}cServer unreachable",
                     None,
                     None,
+                    None,
                     Some(config.max_players.cast_signed()),
                 )
             },
@@ -333,13 +328,11 @@ impl StatusHandler {
                     &entry.text,
                     entry.favicon.as_deref(),
                     entry.version_name.as_deref(),
+                    entry.version_protocol,
                     entry.max_players.map(u32::cast_signed),
                 )
             },
         );
-        if let Some(protocol) = motd_entry.and_then(|e| e.version_protocol) {
-            resp.version.protocol = protocol;
-        }
         let online = connection_registry.count_by_server(config_id) as i32;
         resp.players.online = online;
         resp
