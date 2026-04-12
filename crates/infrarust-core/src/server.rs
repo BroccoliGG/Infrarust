@@ -431,11 +431,7 @@ impl ProxyServer {
                     .extensions
                     .get::<HandshakeData>()
                     .is_some_and(|h| h.intent == ConnectionIntent::Status);
-                if is_status {
-                    self.status_handler
-                        .handle(&mut ctx, &self.services.connection_registry)
-                        .await?;
-                } else {
+                if !is_status {
                     self.send_kick(&mut ctx, &msg).await.ok();
                 }
                 return Ok(());
