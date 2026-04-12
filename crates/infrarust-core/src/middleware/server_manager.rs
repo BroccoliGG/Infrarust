@@ -68,7 +68,7 @@ impl Middleware for ServerManagerMiddleware {
                         Err(e) => {
                             tracing::error!(server = %server_id, "server manager error: {e}");
                             Ok(MiddlewareResult::Reject(
-                                "Server is unavailable. Please try again later.".into(),
+                                "サーバーは現在オフラインです。時間を空けて再度お試し下さい。\nThis server is offline. Please try again later.".into(),
                             ))
                         }
                     }

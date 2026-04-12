@@ -73,7 +73,7 @@ impl Middleware for RateLimiterMiddleware {
                     "rate limit exceeded"
                 );
                 Ok(MiddlewareResult::Reject(
-                    "§c接続が早すぎます！少し間を空けてから再度お試しください。".into(),
+                    "§c接続が早すぎます！少し間を空けてから再度お試しください。\nRate limit reached! Please wait a moment and try again.".into(),
                 ))
             }
         })
