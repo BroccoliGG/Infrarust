@@ -115,7 +115,7 @@ enable_audit_log = true
 MOTD shown when a player pings a domain that doesn't match any server. Uses the same `[motd]` format described in the server config section below.
 
 ```toml
-[default_motd.offline]
+[default_motd.online]
 text = "§cNo server found for this domain"
 version_name = "Infrarust"
 max_players = 0
@@ -360,7 +360,7 @@ Available states: `online`, `sleeping`, `starting`, `crashed`, `stopping`, `unre
 text = "§aServer Online §7— Welcome"
 favicon = "./icon.png"
 
-[motd.offline]
+[motd.unreachable]
 text = "§cServer Offline"
 version_name = "Maintenance"
 max_players = 0
@@ -523,7 +523,7 @@ file = "bans.json"
 purge_interval = "300s"
 enable_audit_log = true
 
-[default_motd.offline]
+[default_motd.online]
 text = "§cNo server found for this domain"
 version_name = "Infrarust"
 max_players = 0
