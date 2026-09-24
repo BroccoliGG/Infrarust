@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::error::CoreError;
 use crate::pipeline::context::ConnectionContext;
 use crate::pipeline::middleware::{Middleware, MiddlewareResult};
-use crate::pipeline::types::{HandshakeData, RoutingData};
+use crate::pipeline::types::{HandshakeData, RoutingData, UnknownDomain};
 use crate::routing::DomainRouter;
 
 /// Middleware that resolves the target server from the handshake domain.
@@ -14,7 +14,8 @@ use crate::routing::DomainRouter;
 /// with incremental add/update/remove support.
 ///
 /// **Requires**: `HandshakeData` (from `HandshakeParserMiddleware`)
-/// **Inserts**: `RoutingData` (server config + config ID)
+/// **Inserts**: `RoutingData` (server config + config ID), or `UnknownDomain`
+/// when no server matches the domain
 pub struct DomainRouterMiddleware {
     domain_router: Arc<DomainRouter>,
 }
@@ -44,9 +45,9 @@ impl Middleware for DomainRouterMiddleware {
                 self.domain_router.resolve_route(domain)
             else {
                 tracing::debug!(domain, "no server found for domain");
-                return Ok(MiddlewareResult::Reject(format!(
-                    "Unknown server: {domain}"
-                )));
+                let reason = format!("Unknown server: {domain}");
+                ctx.extensions.insert(UnknownDomain);
+                return Ok(MiddlewareResult::Reject(reason));
             };
             let config_id = server_config.effective_id();
 

@@ -63,3 +63,10 @@ pub struct LoginData {
 /// Marker type inserted into extensions when a legacy ping is detected (first byte 0xFE).
 #[derive(Debug, Clone, Copy)]
 pub struct LegacyDetected;
+
+/// Marker type inserted by the domain router when the handshake domain matches no server.
+///
+/// The router still returns `Reject`; this marker is what tells an unknown domain
+/// apart from the other rejections (IP filters, rate limiting).
+#[derive(Debug, Clone, Copy)]
+pub struct UnknownDomain;
