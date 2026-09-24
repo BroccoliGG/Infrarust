@@ -352,6 +352,7 @@ Available states: `online`, `sleeping`, `starting`, `crashed`, `stopping`, `unre
 | `text` | string | **required** | MOTD text. Supports Minecraft `§` formatting codes |
 | `favicon` | string | none | Path to a PNG file, a base64-encoded PNG, or a URL |
 | `version_name` | string | none | Version string shown in the client server list |
+| `version_protocol` | integer | none | Protocol number reported to the client. Without it, relayed pings keep the backend's value and synthetic MOTDs report the latest protocol Infrarust supports. A value that differs from the client's protocol makes the client show `version_name` as an incompatible version |
 | `max_players` | integer | none | Max player count shown in the server list |
 
 ```toml

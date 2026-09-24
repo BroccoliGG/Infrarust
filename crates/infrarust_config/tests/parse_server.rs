@@ -103,6 +103,27 @@ fn test_parse_creative_server_manager_local() {
 }
 
 #[test]
+fn test_parse_motd_version_protocol() {
+    let toml_str = r#"
+        domains = ["test.example.com"]
+        addresses = ["127.0.0.1:25565"]
+
+        [motd.online]
+        text = "Legacy"
+        version_name = "1.8.x"
+        version_protocol = 47
+    "#;
+    let config: ServerConfig = toml::from_str(toml_str).expect("failed to parse version_protocol");
+    let online = config
+        .motd
+        .online
+        .as_ref()
+        .expect("motd.online should be set");
+    assert_eq!(online.version_protocol, Some(47));
+    assert!(config.motd.sleeping.is_none());
+}
+
+#[test]
 fn test_deny_unknown_fields() {
     let toml_str = r#"
         domains = ["test.example.com"]
