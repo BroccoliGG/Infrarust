@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use infrarust_config::{ProxyMode, ServerConfig, ServerManagerConfig};
+use infrarust_config::{
+    ProxyMode, ServerConfig, ServerManagerConfig, motd_warnings, validate_server_config,
+};
 
 fn load_survival() -> ServerConfig {
     let toml_str = include_str!("fixtures/survival.toml");
@@ -121,6 +123,57 @@ fn test_parse_motd_version_protocol() {
         .expect("motd.online should be set");
     assert_eq!(online.version_protocol, Some(47));
     assert!(config.motd.sleeping.is_none());
+}
+
+/// `offline` is no longer a MOTD state, but the docs once showed
+/// `[motd.offline]`, so server files written from them must keep loading.
+#[test]
+fn test_parse_motd_offline_is_ignored() {
+    let toml_str = r#"
+        domains = ["test.example.com"]
+        addresses = ["127.0.0.1:25565"]
+
+        [motd.online]
+        text = "Online"
+
+        [motd.offline]
+        text = "Offline"
+    "#;
+    let config: ServerConfig = toml::from_str(toml_str).expect("[motd.offline] should still parse");
+    let online = config
+        .motd
+        .online
+        .as_ref()
+        .expect("motd.online should be set");
+    assert_eq!(online.text, "Online");
+    assert!(config.motd.sleeping.is_none());
+    assert!(config.motd.unreachable.is_none());
+
+    let warnings = motd_warnings(&config);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("[motd.offline]"));
+    assert!(validate_server_config(&config).is_ok());
+
+    let serialized = toml::to_string(&config).expect("serialize");
+    assert!(
+        !serialized.contains("offline"),
+        "the ignored entry must not be written back:\n{serialized}"
+    );
+
+    assert!(motd_warnings(&load_survival()).is_empty());
+}
+
+#[test]
+fn test_unknown_motd_state_is_rejected() {
+    let toml_str = r#"
+        domains = ["test.example.com"]
+        addresses = ["127.0.0.1:25565"]
+
+        [motd.maintenance]
+        text = "Down for maintenance"
+    "#;
+    let result: Result<ServerConfig, _> = toml::from_str(toml_str);
+    assert!(result.is_err(), "unknown MOTD state should cause an error");
 }
 
 #[test]
