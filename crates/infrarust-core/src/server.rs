@@ -38,7 +38,9 @@ use crate::middleware::telemetry::{ConnectionSpan, TelemetryMiddleware};
 use crate::pipeline::Pipeline;
 use crate::pipeline::context::ConnectionContext;
 use crate::pipeline::middleware::MiddlewareResult;
-use crate::pipeline::types::{ConnectionIntent, HandshakeData, LegacyDetected, RoutingData};
+use crate::pipeline::types::{
+    ConnectionIntent, HandshakeData, LegacyDetected, RoutingData, UnknownDomain,
+};
 use crate::player::registry::PlayerRegistryImpl;
 use crate::provider::file::FileProvider;
 use crate::provider::registry::ProviderRegistry;
@@ -512,6 +514,16 @@ impl ProxyServer {
                     .is_some_and(|h| h.intent == ConnectionIntent::Status);
                 if !is_status {
                     self.send_kick(&mut ctx, &msg).await.ok();
+                    return Ok(());
+                }
+                // A rejected status ping gets no reply, except for an unknown
+                // domain: without `RoutingData` the status handler answers
+                // with the default MOTD, as the legacy handler does.
+                if ctx.extensions.contains::<UnknownDomain>() {
+                    return self
+                        .status_handler
+                        .handle(&mut ctx, &self.services.connection_registry)
+                        .await;
                 }
                 return Ok(());
             }
@@ -731,5 +743,212 @@ impl ProxyServer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use std::io::ErrorKind;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::Duration;
+
+    use infrarust_config::KeepaliveConfig;
+    use infrarust_protocol::{
+        CPingResponse, CStatusResponse, ConnectionState, Packet, PacketDecoder, PacketEncoder,
+        PacketFrame, SHandshake, SPingRequest, VarInt,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    use super::*;
+    use crate::ban::BanTarget;
+    use crate::status::{STATUS_PROTOCOL_VERSION, ServerPingResponse};
+
+    const DEFAULT_MOTD: &str = "[default_motd.online]\n\
+        text = \"Unknown domain\"\n\
+        favicon = \"data:image/png;base64,iVBORw0KGgo=\"\n\
+        version_name = \"Infrarust\"\n\
+        version_protocol = 47\n\
+        max_players = 42\n";
+
+    /// Builds a proxy from `infrarust.toml` lines and `(file stem, contents)` server configs.
+    async fn proxy(
+        dir: &tempfile::TempDir,
+        proxy_toml: &str,
+        servers: &[(&str, &str)],
+    ) -> ProxyServer {
+        let servers_dir = dir.path().join("servers");
+        std::fs::create_dir(&servers_dir).unwrap();
+        for (stem, contents) in servers {
+            std::fs::write(servers_dir.join(format!("{stem}.toml")), contents).unwrap();
+        }
+        let config: ProxyConfig = toml::from_str(&format!(
+            "servers_dir = \"{}\"\n{proxy_toml}\n[ban]\nfile = \"{}\"\n",
+            servers_dir.display(),
+            dir.path().join("bans.json").display(),
+        ))
+        .unwrap();
+        ProxyServer::new(
+            config,
+            dir.path().join("infrarust.toml"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Runs a 1.7+ status ping for `domain` through `handle_connection`.
+    ///
+    /// Returns the status the proxy answered with, or `None` if it closed the
+    /// connection without sending anything.
+    async fn status_ping(proxy: &ProxyServer, domain: &str) -> Option<ServerPingResponse> {
+        let listener = Listener::bind(
+            ListenerConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                max_connections: 0,
+                keepalive: KeepaliveConfig::default(),
+                so_reuseport: false,
+                receive_proxy_protocol: false,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let accepted = listener.accept().await.unwrap();
+
+        let exchange = async {
+            let (served, status) = tokio::join!(
+                proxy.handle_connection(accepted, CancellationToken::new()),
+                ping_as_client(&mut client, domain),
+            );
+            served.unwrap();
+            status
+        };
+        tokio::time::timeout(Duration::from_secs(10), exchange)
+            .await
+            .expect("status exchange timed out")
+    }
+
+    async fn ping_as_client(client: &mut TcpStream, domain: &str) -> Option<ServerPingResponse> {
+        let mut handshake = Vec::new();
+        SHandshake {
+            protocol_version: VarInt(ProtocolVersion::V1_21.0),
+            server_address: domain.to_string(),
+            server_port: 25565,
+            next_state: ConnectionState::Status,
+        }
+        .encode(&mut handshake, ProtocolVersion::V1_21)
+        .unwrap();
+        let mut encoder = PacketEncoder::new();
+        encoder.append_raw(0x00, &handshake).unwrap();
+        encoder.append_raw(0x00, &[]).unwrap(); // SStatusRequest
+        client.write_all(&encoder.take()).await.unwrap();
+
+        let mut decoder = PacketDecoder::new();
+        let frame = read_frame(client, &mut decoder).await?;
+        let status =
+            CStatusResponse::decode(&mut frame.payload.as_ref(), STATUS_PROTOCOL_VERSION).unwrap();
+
+        let mut ping = Vec::new();
+        SPingRequest { payload: 7 }
+            .encode(&mut ping, STATUS_PROTOCOL_VERSION)
+            .unwrap();
+        encoder.append_raw(0x01, &ping).unwrap();
+        client.write_all(&encoder.take()).await.unwrap();
+        let frame = read_frame(client, &mut decoder)
+            .await
+            .expect("status response must be followed by a pong");
+        let pong =
+            CPingResponse::decode(&mut frame.payload.as_ref(), STATUS_PROTOCOL_VERSION).unwrap();
+        assert_eq!(pong.payload, 7);
+
+        Some(serde_json::from_str(&status.json_response).unwrap())
+    }
+
+    /// Reads one frame, or `None` if the connection closed before any of it arrived.
+    async fn read_frame(
+        client: &mut TcpStream,
+        decoder: &mut PacketDecoder,
+    ) -> Option<PacketFrame> {
+        let mut received = 0;
+        loop {
+            if let Some(frame) = decoder.try_next_frame().unwrap() {
+                return Some(frame);
+            }
+            let mut buf = [0u8; 4096];
+            let n = match client.read(&mut buf).await {
+                Ok(n) => n,
+                // Closing with our request still unread sends a reset, not a FIN.
+                Err(e) if e.kind() == ErrorKind::ConnectionReset => 0,
+                Err(e) => panic!("reading from the proxy failed: {e}"),
+            };
+            if n == 0 {
+                assert_eq!(received, 0, "connection closed mid-frame");
+                return None;
+            }
+            received += n;
+            decoder.queue_bytes(&buf[..n]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_status_ping_for_an_unknown_domain_gets_the_default_motd() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = proxy(&dir, DEFAULT_MOTD, &[]).await;
+
+        let status = status_ping(&proxy, "unknown.test")
+            .await
+            .expect("an unknown domain must be answered with the default MOTD");
+
+        assert_eq!(status.description["text"], "Unknown domain");
+        assert_eq!(
+            status.favicon.as_deref(),
+            Some("data:image/png;base64,iVBORw0KGgo=")
+        );
+        assert_eq!(status.version.name, "Infrarust");
+        assert_eq!(status.version.protocol, 47);
+        assert_eq!(status.players.max, 42);
+    }
+
+    #[tokio::test]
+    async fn a_status_ping_blocked_by_a_server_ip_filter_gets_no_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let filtered = "domains = [\"filtered.test\"]\naddresses = [\"127.0.0.1:1\"]\n\
+                        [ip_filter]\nblacklist = [\"127.0.0.1/32\"]\n";
+        let proxy = proxy(&dir, DEFAULT_MOTD, &[("filtered", filtered)]).await;
+
+        assert!(status_ping(&proxy, "filtered.test").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_banned_ip_gets_no_reply_even_for_an_unknown_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = proxy(&dir, DEFAULT_MOTD, &[]).await;
+        proxy
+            .ban_manager()
+            .ban(
+                BanTarget::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                None,
+                None,
+                "test".into(),
+            )
+            .await
+            .unwrap();
+
+        assert!(status_ping(&proxy, "unknown.test").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_drop_behavior_closes_an_unknown_domain_status_ping_without_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_toml = format!("unknown_domain_behavior = \"drop\"\n{DEFAULT_MOTD}");
+        let proxy = proxy(&dir, &proxy_toml, &[]).await;
+
+        assert!(status_ping(&proxy, "unknown.test").await.is_none());
     }
 }

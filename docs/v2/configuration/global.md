@@ -183,7 +183,7 @@ version_name = "Infrarust"
 max_players = 0
 ```
 
-The MOTD shown when a player pings a domain that doesn't match any server. You can set different MOTDs for different states: `online`, `offline`, `sleeping`, `starting`, `crashed`, `stopping`, `unreachable`.
+The MOTD shown when a player pings a domain that doesn't match any server. You can set different MOTDs for different states: `online`, `sleeping`, `starting`, `crashed`, `stopping`, `unreachable`.
 
 Each MOTD entry supports these fields:
 
