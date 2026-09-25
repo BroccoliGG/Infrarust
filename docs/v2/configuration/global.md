@@ -123,6 +123,8 @@ What happens when a player connects with a domain that doesn't match any server 
 | `default_motd` | Respond with the MOTD defined in `[default_motd]` (default) |
 | `drop` | Close the connection silently |
 
+Only unknown domains are affected. A connection rejected for another reason, such as an [IP filter](./security/ip-filtering) or the [rate limiter](./security/rate-limiting), gets the same answer under both values.
+
 ## Rate limiting
 
 ```toml

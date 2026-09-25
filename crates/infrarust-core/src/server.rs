@@ -504,7 +504,10 @@ impl ProxyServer {
                 return Ok(());
             }
             MiddlewareResult::Reject(msg) => {
-                if self.unknown_domain_behavior == UnknownDomainBehavior::Drop {
+                let unknown_domain = ctx.extensions.contains::<UnknownDomain>();
+                // `drop` covers unknown domains only. The other rejections
+                // (IP filters, rate limiting) are handled below either way.
+                if unknown_domain && self.unknown_domain_behavior == UnknownDomainBehavior::Drop {
                     tracing::debug!("dropping connection: {msg}");
                     return Ok(());
                 }
@@ -522,7 +525,7 @@ impl ProxyServer {
                 // A rejected status ping gets no reply, except for an unknown
                 // domain: without `RoutingData` the status handler answers
                 // with the default MOTD, as the legacy handler does.
-                if ctx.extensions.contains::<UnknownDomain>() {
+                if unknown_domain {
                     return self
                         .status_handler
                         .handle(&mut ctx, &self.services.connection_registry)
@@ -779,6 +782,17 @@ mod tests {
     /// An IP filter that blocks the test client, which connects from 127.0.0.1.
     const BLOCK_LOCALHOST: &str = "[ip_filter]\nblacklist = [\"127.0.0.1/32\"]\n";
 
+    /// A top-level key, so it must come before any table in `proxy_toml`.
+    const DROP_UNKNOWN_DOMAINS: &str = "unknown_domain_behavior = \"drop\"\n";
+
+    /// A rate limit that lets the test client log in once and ping once.
+    const RATE_LIMIT_ONCE: &str = "[rate_limit]\n\
+        enabled = true\n\
+        max_connections = 1\n\
+        window = \"1h\"\n\
+        status_max = 1\n\
+        status_window = \"1h\"\n";
+
     /// A server for `filtered.test` whose own IP filter blocks the test client.
     fn filtered_server() -> String {
         format!("domains = [\"filtered.test\"]\naddresses = [\"127.0.0.1:1\"]\n{BLOCK_LOCALHOST}")
@@ -1024,11 +1038,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_login_for_an_unknown_domain_is_kicked_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = proxy(&dir, "", &[]).await;
+
+        assert_eq!(
+            login(&proxy, "unknown.test").await.as_deref(),
+            Some(r#"{"text":"Unknown server: unknown.test"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_status_ping_gets_no_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_toml = format!("{DEFAULT_MOTD}{RATE_LIMIT_ONCE}");
+        let proxy = proxy(&dir, &proxy_toml, &[]).await;
+
+        assert!(status_ping(&proxy, "unknown.test").await.is_some());
+        assert!(status_ping(&proxy, "unknown.test").await.is_none());
+    }
+
+    #[tokio::test]
     async fn the_drop_behavior_closes_an_unknown_domain_status_ping_without_reply() {
         let dir = tempfile::tempdir().unwrap();
-        let proxy_toml = format!("unknown_domain_behavior = \"drop\"\n{DEFAULT_MOTD}");
+        let proxy_toml = format!("{DROP_UNKNOWN_DOMAINS}{DEFAULT_MOTD}");
         let proxy = proxy(&dir, &proxy_toml, &[]).await;
 
         assert!(status_ping(&proxy, "unknown.test").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_drop_behavior_closes_an_unknown_domain_login_without_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = proxy(&dir, DROP_UNKNOWN_DOMAINS, &[]).await;
+
+        assert_eq!(login(&proxy, "unknown.test").await, None);
+    }
+
+    #[tokio::test]
+    async fn the_drop_behavior_still_kicks_a_login_blocked_by_a_server_ip_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = proxy(
+            &dir,
+            DROP_UNKNOWN_DOMAINS,
+            &[("filtered", &filtered_server())],
+        )
+        .await;
+
+        assert_eq!(
+            login(&proxy, "filtered.test").await.as_deref(),
+            Some(r#"{"text":"IP 127.0.0.1 is not allowed on this server"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_drop_behavior_still_kicks_a_rate_limited_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_toml = format!("{DROP_UNKNOWN_DOMAINS}{RATE_LIMIT_ONCE}");
+        let proxy = proxy(&dir, &proxy_toml, &[("filtered", &filtered_server())]).await;
+
+        // The limiter runs before routing: the dropped login spends the only
+        // token, and the next one is kicked before the server's filter runs.
+        assert_eq!(login(&proxy, "unknown.test").await, None);
+        assert_eq!(
+            login(&proxy, "filtered.test").await.as_deref(),
+            Some(r#"{"text":"Rate limit exceeded"}"#)
+        );
     }
 }
