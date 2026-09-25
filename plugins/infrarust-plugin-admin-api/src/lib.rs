@@ -1218,6 +1218,26 @@ api_key = \"super-secret-key-value\"
     }
 
     #[tokio::test]
+    async fn test_servers_validate_warns_about_the_removed_offline_motd() {
+        let (status, body) = auth_post(
+            "/api/v1/servers/validate",
+            serde_json::json!({
+                "id": "lobby",
+                "domains": ["lobby.example.com"],
+                "addresses": ["127.0.0.1:25565"],
+                "motd": { "offline": { "text": "Offline" } },
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["valid"], true, "{body}");
+        let warnings = body["data"]["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1, "{body}");
+        assert!(warnings[0].as_str().unwrap().contains("[motd.offline]"));
+    }
+
+    #[tokio::test]
     async fn test_servers_create_persists_full_document() {
         let dir = tempfile::tempdir().unwrap();
         let state = test_state_in(dir.path(), "test-key", 1000);
@@ -2407,6 +2427,31 @@ server_id = \"abc\"
         let body: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(body["data"]["valid"], false);
         assert!(!body["data"]["errors"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_config_proxy_validate_warns_about_the_removed_offline_motd() {
+        let (state, _config, _dir) = config_state();
+
+        let (status, _, body) = auth_text(
+            &state,
+            http::Method::POST,
+            "/api/v1/config/proxy/validate",
+            Some("[default_motd.offline]\ntext = \"No server found for this domain\"\n"),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["data"]["valid"], true, "{body}");
+        let warnings = body["data"]["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1, "{body}");
+        assert!(
+            warnings[0]
+                .as_str()
+                .unwrap()
+                .contains("[default_motd.offline]")
+        );
     }
 
     #[tokio::test]

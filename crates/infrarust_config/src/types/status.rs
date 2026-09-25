@@ -38,6 +38,11 @@ pub struct MotdConfig {
     pub crashed: Option<MotdEntry>,
     pub stopping: Option<MotdEntry>,
     pub unreachable: Option<MotdEntry>,
+    /// Removed state, still accepted so configs that set it keep loading.
+    /// Never shown and never written back: `motd_warnings` and
+    /// `proxy_config_warnings` report it as ignored.
+    #[serde(skip_serializing)]
+    pub offline: Option<MotdEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

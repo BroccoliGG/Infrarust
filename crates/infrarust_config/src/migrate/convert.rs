@@ -316,6 +316,7 @@ fn convert_motds(
         crashed,
         stopping,
         unreachable,
+        offline: None,
     }
 }
 

@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::time::Duration;
 
-use infrarust_config::ProxyConfig;
+use infrarust_config::{ProxyConfig, proxy_config_warnings};
 
 fn load_proxy_fixture() -> ProxyConfig {
     let toml_str = include_str!("fixtures/infrarust.toml");
@@ -53,6 +53,33 @@ fn test_parse_proxy_default_motd() {
     assert_eq!(online.text, "§cUnknown server");
     assert_eq!(online.version_name.as_deref(), Some("Infrarust"));
     assert_eq!(online.max_players, Some(0));
+}
+
+/// `offline` is no longer a MOTD state, but the docs once showed
+/// `[default_motd.offline]`, so configs copied from them must keep loading.
+#[test]
+fn test_parse_proxy_default_motd_offline_is_ignored() {
+    let config: ProxyConfig = toml::from_str(
+        r#"
+        [default_motd.offline]
+        text = "§cNo server found for this domain"
+        version_name = "Infrarust"
+        max_players = 0
+    "#,
+    )
+    .expect("[default_motd.offline] should still parse");
+
+    let motd_config = config
+        .default_motd
+        .as_ref()
+        .expect("default_motd should be set");
+    assert!(motd_config.online.is_none());
+
+    let warnings = proxy_config_warnings(&config);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("[default_motd.offline]"));
+
+    assert!(proxy_config_warnings(&load_proxy_fixture()).is_empty());
 }
 
 #[test]

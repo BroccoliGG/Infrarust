@@ -75,6 +75,10 @@ pub fn validate_server_config(config: &ServerConfig) -> Result<(), ConfigError> 
         tracing::warn!(server = %id, "{warning}");
     }
 
+    for warning in motd_warnings(config) {
+        tracing::warn!(server = %id, "{warning}");
+    }
+
     #[cfg(not(target_os = "linux"))]
     if config.proxy_mode == crate::types::ProxyMode::ZeroCopy {
         tracing::warn!(
@@ -114,6 +118,25 @@ pub fn balance_warnings(config: &ServerConfig) -> Vec<String> {
             warnings
                 .push("slow_start has no effect with balance = \"first_available\"".to_string());
         }
+    }
+
+    warnings
+}
+
+/// Returns the warnings for MOTD entries a server config sets but the proxy
+/// never shows.
+///
+/// Pure so it can be unit-tested; `validate_server_config` logs each entry.
+pub fn motd_warnings(config: &ServerConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if config.motd.offline.is_some() {
+        warnings.push(
+            "[motd.offline] is ignored: the offline MOTD state was removed; \
+             use [motd.sleeping] for a server its manager put to sleep, \
+             or [motd.unreachable] for a backend that does not answer"
+                .to_string(),
+        );
     }
 
     warnings
@@ -217,6 +240,29 @@ pub fn validate_proxy_config(config: &ProxyConfig) -> Result<(), ConfigError> {
     }
 
     Ok(())
+}
+
+/// Returns the warnings for settings a proxy config sets but the proxy
+/// ignores.
+///
+/// Pure, and not logged by [`validate_proxy_config`]: the proxy validates its
+/// config before logging is set up, so the caller logs each entry once it is.
+pub fn proxy_config_warnings(config: &ProxyConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if config
+        .default_motd
+        .as_ref()
+        .is_some_and(|motd| motd.offline.is_some())
+    {
+        warnings.push(
+            "[default_motd.offline] is ignored: the offline MOTD state was removed; \
+             move it to [default_motd.online] to show it for unknown domains"
+                .to_string(),
+        );
+    }
+
+    warnings
 }
 
 /// Validates everything in a proxy configuration document except where its

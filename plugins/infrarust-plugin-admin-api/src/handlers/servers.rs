@@ -495,7 +495,10 @@ pub async fn validate(headers: HeaderMap, body: String) -> Json<ApiResponse<Vali
             ValidationResponse {
                 valid: errors.is_empty(),
                 errors,
-                warnings: infrarust_config::balance_warnings(&config),
+                warnings: infrarust_config::balance_warnings(&config)
+                    .into_iter()
+                    .chain(infrarust_config::motd_warnings(&config))
+                    .collect(),
             }
         }
     };

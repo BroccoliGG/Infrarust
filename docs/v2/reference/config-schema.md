@@ -347,6 +347,8 @@ MOTD entries for each server state. Each sub-table is optional.
 
 Available states: `online`, `sleeping`, `starting`, `crashed`, `stopping`, `unreachable`.
 
+`offline` was removed as a state. A config that still sets `[motd.offline]` or `[default_motd.offline]` loads, but the entry is ignored and a warning is logged: move it to `sleeping` or `unreachable`, or to `[default_motd.online]` for unknown domains.
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `text` | string | **required** | MOTD text. Supports Minecraft `§` formatting codes |

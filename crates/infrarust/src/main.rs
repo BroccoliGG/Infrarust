@@ -204,6 +204,10 @@ fn main() -> ExitCode {
         env!("CARGO_PKG_VERSION"),
     );
 
+    for warning in infrarust_config::proxy_config_warnings(&config) {
+        tracing::warn!("{warning}");
+    }
+
     // Build tokio runtime with configurable worker threads
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if config.worker_threads > 0 {
