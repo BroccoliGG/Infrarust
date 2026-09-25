@@ -508,11 +508,14 @@ impl ProxyServer {
                     tracing::debug!("dropping connection: {msg}");
                     return Ok(());
                 }
-                let is_status = ctx
-                    .extensions
-                    .get::<HandshakeData>()
-                    .is_some_and(|h| h.intent == ConnectionIntent::Status);
-                if !is_status {
+                // Without a handshake (the global IP filter rejects before it
+                // is read) the intent is unknown, and a kick would reach a
+                // status ping as a malformed status response. Close without a
+                // reply, as for a banned IP.
+                let Some(intent) = ctx.extensions.get::<HandshakeData>().map(|h| h.intent) else {
+                    return Ok(());
+                };
+                if intent != ConnectionIntent::Status {
                     self.send_kick(&mut ctx, &msg).await.ok();
                     return Ok(());
                 }
@@ -756,8 +759,8 @@ mod tests {
 
     use infrarust_config::KeepaliveConfig;
     use infrarust_protocol::{
-        CPingResponse, CStatusResponse, ConnectionState, Packet, PacketDecoder, PacketEncoder,
-        PacketFrame, SHandshake, SPingRequest, VarInt,
+        CLoginDisconnect, CPingResponse, CStatusResponse, ConnectionState, Packet, PacketDecoder,
+        PacketEncoder, PacketFrame, SHandshake, SLoginStart, SPingRequest, VarInt,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -772,6 +775,14 @@ mod tests {
         version_name = \"Infrarust\"\n\
         version_protocol = 47\n\
         max_players = 42\n";
+
+    /// An IP filter that blocks the test client, which connects from 127.0.0.1.
+    const BLOCK_LOCALHOST: &str = "[ip_filter]\nblacklist = [\"127.0.0.1/32\"]\n";
+
+    /// A server for `filtered.test` whose own IP filter blocks the test client.
+    fn filtered_server() -> String {
+        format!("domains = [\"filtered.test\"]\naddresses = [\"127.0.0.1:1\"]\n{BLOCK_LOCALHOST}")
+    }
 
     /// Builds a proxy from `infrarust.toml` lines and `(file stem, contents)` server configs.
     async fn proxy(
@@ -804,6 +815,19 @@ mod tests {
     /// Returns the status the proxy answered with, or `None` if it closed the
     /// connection without sending anything.
     async fn status_ping(proxy: &ProxyServer, domain: &str) -> Option<ServerPingResponse> {
+        serve(proxy, async |client| ping_as_client(client, domain).await).await
+    }
+
+    /// Starts a 1.7+ login for `domain` through `handle_connection`.
+    ///
+    /// Returns the reason of the kick the proxy answered with, or `None` if it
+    /// closed the connection without sending anything.
+    async fn login(proxy: &ProxyServer, domain: &str) -> Option<String> {
+        serve(proxy, async |client| login_as_client(client, domain).await).await
+    }
+
+    /// Serves one connection with `handle_connection` while `client` drives its peer.
+    async fn serve<T>(proxy: &ProxyServer, client: impl AsyncFnOnce(&mut TcpStream) -> T) -> T {
         let listener = Listener::bind(
             ListenerConfig {
                 bind: "127.0.0.1:0".parse().unwrap(),
@@ -816,36 +840,66 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+        let mut stream = TcpStream::connect(listener.local_addr().unwrap())
             .await
             .unwrap();
         let accepted = listener.accept().await.unwrap();
 
         let exchange = async {
-            let (served, status) = tokio::join!(
+            let (served, outcome) = tokio::join!(
                 proxy.handle_connection(accepted, CancellationToken::new()),
-                ping_as_client(&mut client, domain),
+                client(&mut stream),
             );
             served.unwrap();
-            status
+            outcome
         };
         tokio::time::timeout(Duration::from_secs(10), exchange)
             .await
-            .expect("status exchange timed out")
+            .expect("exchange with the proxy timed out")
     }
 
-    async fn ping_as_client(client: &mut TcpStream, domain: &str) -> Option<ServerPingResponse> {
-        let mut handshake = Vec::new();
+    /// Encodes a 1.21 handshake payload for `domain` that switches to `next_state`.
+    fn handshake(domain: &str, next_state: ConnectionState) -> Vec<u8> {
+        let mut payload = Vec::new();
         SHandshake {
             protocol_version: VarInt(ProtocolVersion::V1_21.0),
             server_address: domain.to_string(),
             server_port: 25565,
-            next_state: ConnectionState::Status,
+            next_state,
         }
-        .encode(&mut handshake, ProtocolVersion::V1_21)
+        .encode(&mut payload, ProtocolVersion::V1_21)
+        .unwrap();
+        payload
+    }
+
+    async fn login_as_client(client: &mut TcpStream, domain: &str) -> Option<String> {
+        let mut login_start = Vec::new();
+        SLoginStart {
+            name: "Steve".to_string(),
+            uuid: Some(uuid::Uuid::nil()),
+            profile_key: None,
+        }
+        .encode(&mut login_start, ProtocolVersion::V1_21)
         .unwrap();
         let mut encoder = PacketEncoder::new();
-        encoder.append_raw(0x00, &handshake).unwrap();
+        encoder
+            .append_raw(0x00, &handshake(domain, ConnectionState::Login))
+            .unwrap();
+        encoder.append_raw(0x00, &login_start).unwrap();
+        client.write_all(&encoder.take()).await.unwrap();
+
+        let frame = read_frame(client, &mut PacketDecoder::new()).await?;
+        assert_eq!(frame.id, 0x00, "expected a login disconnect");
+        let kick =
+            CLoginDisconnect::decode(&mut frame.payload.as_ref(), ProtocolVersion::V1_21).unwrap();
+        Some(kick.reason)
+    }
+
+    async fn ping_as_client(client: &mut TcpStream, domain: &str) -> Option<ServerPingResponse> {
+        let mut encoder = PacketEncoder::new();
+        encoder
+            .append_raw(0x00, &handshake(domain, ConnectionState::Status))
+            .unwrap();
         encoder.append_raw(0x00, &[]).unwrap(); // SStatusRequest
         client.write_all(&encoder.take()).await.unwrap();
 
@@ -918,11 +972,37 @@ mod tests {
     #[tokio::test]
     async fn a_status_ping_blocked_by_a_server_ip_filter_gets_no_reply() {
         let dir = tempfile::tempdir().unwrap();
-        let filtered = "domains = [\"filtered.test\"]\naddresses = [\"127.0.0.1:1\"]\n\
-                        [ip_filter]\nblacklist = [\"127.0.0.1/32\"]\n";
-        let proxy = proxy(&dir, DEFAULT_MOTD, &[("filtered", filtered)]).await;
+        let proxy = proxy(&dir, DEFAULT_MOTD, &[("filtered", &filtered_server())]).await;
 
         assert!(status_ping(&proxy, "filtered.test").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_login_blocked_by_a_server_ip_filter_is_kicked_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = proxy(&dir, "", &[("filtered", &filtered_server())]).await;
+
+        assert_eq!(
+            login(&proxy, "filtered.test").await.as_deref(),
+            Some(r#"{"text":"IP 127.0.0.1 is not allowed on this server"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_status_ping_blocked_by_the_global_ip_filter_gets_no_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_toml = format!("{DEFAULT_MOTD}{BLOCK_LOCALHOST}");
+        let proxy = proxy(&dir, &proxy_toml, &[]).await;
+
+        assert!(status_ping(&proxy, "unknown.test").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_login_blocked_by_the_global_ip_filter_gets_no_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = proxy(&dir, BLOCK_LOCALHOST, &[]).await;
+
+        assert_eq!(login(&proxy, "unknown.test").await, None);
     }
 
     #[tokio::test]

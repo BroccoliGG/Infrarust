@@ -54,7 +54,7 @@ Every connection runs through the common pipeline, a sequence of five middleware
 
 ### IP filter
 
-Checks the client IP against a global allow/deny list. Blocked IPs never reach the handshake parser.
+Checks the client IP against a global allow/deny list. Blocked IPs never reach the handshake parser, and their connection is closed without a reply.
 
 ### Ban IP check
 

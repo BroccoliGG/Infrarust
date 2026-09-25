@@ -73,6 +73,8 @@ IP filtering runs at two points in the connection pipeline. The global filter ru
 
 A connection must pass both filters. The global filter rejects unwanted IPs before any packet is parsed; per-server filters let you restrict individual backends independently.
 
+The two filters answer a blocked client differently. The global filter closes the connection without a reply, as an IP ban does: it runs before the handshake, so the proxy cannot yet tell a player joining from a server list ping. The per-server filter runs after the handshake, so a blocked player joining is kicked with a message, while a blocked server list ping gets no reply.
+
 ## Examples
 
 ### Private server with a whitelist
@@ -84,7 +86,7 @@ Only allow connections from a home network and a friend's IP:
 whitelist = ["192.168.1.0/24", "203.0.113.50/32"]
 ```
 
-Any IP outside these ranges is rejected with "IP 45.33.22.11 is not allowed on this server" (per-server filter) or "IP 45.33.22.11 is not allowed" (global filter).
+In a server config, this kicks a player joining from any other IP with "IP 45.33.22.11 is not allowed on this server". In `infrarust.toml`, the same filter closes the connection without a message.
 
 ### Public server with a blocklist
 
